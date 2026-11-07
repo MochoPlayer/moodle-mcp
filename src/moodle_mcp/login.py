@@ -68,6 +68,14 @@ def launch_url(base_url: str, passport: str) -> str:
     return f"{base_url}/admin/tool/mobile/launch.php?{q}"
 
 
+def is_after_login(page_url: str, base_url: str) -> bool:
+    """True for a Moodle page that only a logged-in user reaches (not login, SSO or launch pages)."""
+    if not page_url.startswith(base_url.rstrip("/") + "/"):
+        return False
+    path = page_url[len(base_url.rstrip("/")):]
+    return not any(path.startswith(x) for x in ("/login/", "/auth/", "/admin/tool/mobile/"))
+
+
 def parse_token(raw: str, site_urls: list[str], passport: str) -> str:
     """Decode the base64 part of moodlemobile://token=... and check its signature."""
     raw = urllib.parse.unquote(raw)
@@ -203,6 +211,12 @@ def catch_token(base_url: str, site_urls: list[str], profile: Path, timeout: flo
         if on_open:
             on_open()
 
+        retried: dict[str, float] = {}
+        # Pages already open on the site (a login from an earlier try): use them at once.
+        for t in cdp.call("Target.getTargets").get("targetInfos", []):
+            if t.get("type") == "page" and t["targetId"] != tid and is_after_login(t.get("url", ""), base_url):
+                retried[t["targetId"]] = time.time()
+                cdp.send("Target.closeTarget", {"targetId": t["targetId"]})
         end = time.time() + timeout
         while time.time() < end:
             ev = cdp.next_event(1.0)
@@ -211,6 +225,15 @@ def catch_token(base_url: str, site_urls: list[str], profile: Path, timeout: flo
             method, p, s = ev["method"], ev.get("params", {}), ev.get("sessionId")
             if method == "Target.targetCreated" and p.get("targetInfo", {}).get("type") == "page":
                 attach(p["targetInfo"]["targetId"])
+            elif method == "Target.targetInfoChanged" and p.get("targetInfo", {}).get("type") == "page":
+                # SSO logins often lose the return address and land on the dashboard.
+                # The user is logged in then, so open the launch page again in that tab.
+                info = p["targetInfo"]
+                if is_after_login(info.get("url", ""), base_url) and time.time() - retried.get(info["targetId"], 0) > 10:
+                    retried[info["targetId"]] = time.time()
+                    tsid = attach(info["targetId"])
+                    if tsid:
+                        cdp.send("Page.navigate", {"url": url}, tsid)
             elif method == "Fetch.requestPaused":
                 rid = p["requestId"]
                 found = None

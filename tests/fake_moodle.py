@@ -31,6 +31,8 @@ class FakeMoodle:
         self.downloads: list[str] = []
         self.timemodified = 1_700_000_000
         self.extra_file = False
+        self.lose_return = False  # SSO that lands on /my/ the first time
+        self.launch_visits = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -124,7 +126,12 @@ class FakeMoodle:
                     path = u.path[len("/webservice/pluginfile.php"):]
                     fake.downloads.append(path)
                     return self._send(200, FILES[path], "application/octet-stream")
+                if u.path == "/my/":
+                    return self._send(200, b"<html><title>Dashboard</title></html>", "text/html")
                 if u.path == "/admin/tool/mobile/launch.php":
+                    fake.launch_visits += 1
+                    if fake.lose_return and fake.launch_visits == 1:
+                        return self._send(303, b"", "text/html", {"Location": f"{fake.url}/my/"})
                     sig = hashlib.md5((fake.url + q["passport"]).encode()).hexdigest()
                     raw = base64.b64encode(f"{sig}:::{TOKEN}:::private".encode()).decode()
                     return self._send(303, b"", "text/html", {"Location": f"moodlemobile://token={raw}"})

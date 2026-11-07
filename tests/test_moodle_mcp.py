@@ -214,3 +214,20 @@ def test_browser_catch_token(env):
     fake = env["fake"]
     tok = login.catch_token(fake.url, [fake.url], env["tmp"] / "profile", timeout=60)
     assert tok == TOKEN
+
+
+@pytest.mark.skipif(not has_chrome(), reason="no Chrome")
+def test_browser_catch_token_after_sso_lands_on_dashboard(env):
+    fake = env["fake"]
+    fake.lose_return = True
+    tok = login.catch_token(fake.url, [fake.url], env["tmp"] / "profile2", timeout=60)
+    assert tok == TOKEN and fake.launch_visits == 2
+
+
+def test_is_after_login():
+    b = "https://m.x/t"
+    assert login.is_after_login(b + "/my/", b)
+    assert not login.is_after_login(b + "/login/index.php", b)
+    assert not login.is_after_login(b + "/auth/oauth2/login.php", b)
+    assert not login.is_after_login(b + "/admin/tool/mobile/launch.php?x", b)
+    assert not login.is_after_login("https://sso.upm.es/x", b)

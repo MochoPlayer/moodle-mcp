@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moodle setup</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1d2433; --muted: #5a6275; --line: #dde1e8;
+  --accent: #2557d6; --accent-text: #ffffff; --accent-soft: #e8eefc; --ok: #1e7f4f; --ok-soft: #e4f4ec;
+  --risk: #b42318; --focus: #2557d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #a2aabb; --line: #2c3340;
+    --accent: #7aa2ff; --accent-text: #0d1320; --accent-soft: #1f2a44; --ok: #5cd39a; --ok-soft: #173126;
+    --risk: #ff8a80; --focus: #7aa2ff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px; }
+h1 { font-size: 24px; margin: 0 0 24px; }
+h2 { font-size: 17px; margin: 0 0 12px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px; margin-bottom: 16px; }
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.state { font-weight: 600; }
+.state.ok { color: var(--ok); }
+.muted { color: var(--muted); font-size: 13px; }
+button { font: inherit; font-weight: 600; min-height: 44px; padding: 0 24px; border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--accent); color: var(--accent-text); cursor: pointer; }
+button:hover { filter: brightness(1.08); }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+button[disabled] { cursor: default; filter: none; }
+button.done { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+button.busy { background: var(--accent-soft); color: var(--text); border-color: var(--line); }
+.courses { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--line); }
+.courses li { border-bottom: 1px solid var(--line); }
+.courses label { display: flex; gap: 12px; align-items: flex-start; padding: 12px 8px; min-height: 44px; cursor: pointer; }
+.courses li.on { background: var(--accent-soft); }
+.courses input { width: 20px; height: 20px; margin-top: 2px; flex: none; accent-color: var(--accent); }
+.courses label > div { min-width: 0; overflow-wrap: anywhere; }
+.courses .name { font-weight: 600; }
+main, .card { min-width: 0; }
+.card { overflow-wrap: anywhere; }
+.courses .tag { font-size: 12px; font-weight: 600; color: var(--muted); }
+.field { margin-bottom: 16px; }
+.field label { display: block; font-weight: 600; margin-bottom: 4px; }
+input[type=text] { width: 100%; min-height: 44px; padding: 8px 12px; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; }
+.radio { display: flex; gap: 8px; align-items: center; min-height: 44px; }
+.error { color: var(--risk); font-weight: 600; }
+@media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Moodle for Claude</h1>
+
+  <section class="card" aria-labelledby="h-login">
+    <h2 id="h-login">Login</h2>
+    <div class="row">
+      <span id="login-state" class="state">Checking…</span>
+      <button id="login-btn" type="button" hidden>Log in with UPM</button>
+    </div>
+    <p id="login-note" class="muted"></p>
+  </section>
+
+  <section class="card" aria-labelledby="h-courses">
+    <h2 id="h-courses">Courses to download</h2>
+    <ul id="courses" class="courses"></ul>
+    <div class="field">
+      <label for="master">Master folder</label>
+      <input id="master" type="text" spellcheck="false">
+      <div class="muted">Files go to &lt;subject folder&gt;\Moodle\.</div>
+    </div>
+    <fieldset class="field" style="border:0;padding:0;margin:0 0 16px">
+      <legend style="font-weight:600;margin-bottom:4px">Courses with no subject folder</legend>
+      <label class="radio"><input type="radio" name="unmatched" value="random"> Put them in Master\Random\Moodle\</label>
+      <label class="radio"><input type="radio" name="unmatched" value="skip"> Do not download them</label>
+    </fieldset>
+    <div class="row">
+      <button id="save-btn" type="button">Save setup</button>
+      <span id="save-msg" class="muted" role="status"></span>
+    </div>
+  </section>
+</main>
+<script>
+const base = location.pathname.replace(/\/?(index\.html)?$/, "/");
+const $ = (id) => document.getElementById(id);
+let polling = null;
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-Moodle-MCP": "1" }, body: JSON.stringify(body) };
+  const r = await fetch(base + path, opt);
+  const d = await r.json();
+  if (!r.ok || d.error) throw new Error(d.error || ("HTTP " + r.status));
+  return d;
+}
+
+function showLogin(st) {
+  const s = $("login-state"), b = $("login-btn"), n = $("login-note");
+  b.hidden = false; b.className = ""; b.disabled = false;
+  if (st.token_valid) {
+    s.textContent = "Logged in as " + (st.user || "you"); s.className = "state ok";
+    b.textContent = "Logged in ✓"; b.className = "done"; b.disabled = true;
+    n.textContent = "";
+  } else if (st.login === "waiting") {
+    s.textContent = "Not logged in yet"; s.className = "state";
+    b.textContent = "Waiting for your login…"; b.className = "busy"; b.disabled = true;
+    n.textContent = "Log in in the new browser window. This page updates by itself.";
+  } else {
+    s.textContent = st.logged_in ? "Login expired" : "Not logged in"; s.className = "state";
+    b.textContent = "Log in with UPM";
+    n.innerHTML = st.login_message ? '<span class="error"></span>' : "";
+    if (st.login_message) n.firstChild.textContent = st.login_message;
+  }
+}
+
+function showCourses(qs, st) {
+  const q = Object.fromEntries(qs.map(x => [x.key, x]));
+  const ul = $("courses"); ul.innerHTML = "";
+  const sel = new Set(q.course_ids.recommended);
+  for (const o of q.course_ids.options) {
+    const li = document.createElement("li");
+    const lab = document.createElement("label");
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = sel.has(o.value);
+    li.className = cb.checked ? "on" : "";
+    cb.addEventListener("change", () => { li.className = cb.checked ? "on" : ""; setSaveDirty(); });
+    const txt = document.createElement("div");
+    const nm = document.createElement("div"); nm.className = "name"; nm.textContent = o.label;
+    const tg = document.createElement("div"); tg.className = "tag"; tg.textContent = o.subject ? "Subject: " + o.subject : "No subject folder";
+    txt.append(nm, tg); lab.append(cb, txt); li.append(lab); ul.append(li);
+  }
+  if (!q.course_ids.options.length) ul.innerHTML = '<li class="muted" style="padding:12px 8px">Log in first to see your courses.</li>';
+  $("master").value = q.master_dir.options[0].value;
+  const um = st.unmatched || "random";
+  for (const r of document.getElementsByName("unmatched")) r.checked = (r.value === (window._unmatched || um));
+}
+
+function setSaveDirty() { const b = $("save-btn"); b.className = ""; b.disabled = false; b.textContent = "Save setup"; $("save-msg").textContent = ""; }
+
+async function refresh(full) {
+  try {
+    const d = await api("api/state");
+    showLogin(d.status);
+    if (full) showCourses(d.questions, d.status);
+    if (d.status.login === "waiting" && !d.status.token_valid) { if (!polling) polling = setInterval(() => refresh(false), 2000); }
+    else if (polling) { clearInterval(polling); polling = null; refresh(true); }
+  } catch (e) { $("login-state").textContent = "Error: " + e.message; }
+}
+
+$("login-btn").addEventListener("click", async () => {
+  const b = $("login-btn"); b.textContent = "Waiting for your login…"; b.className = "busy"; b.disabled = true;
+  try { await api("api/login", {}); refresh(false); polling = polling || setInterval(() => refresh(false), 2000); }
+  catch (e) { b.textContent = "Log in with UPM"; b.className = ""; b.disabled = false; $("login-note").textContent = e.message; }
+});
+
+$("master").addEventListener("input", setSaveDirty);
+for (const r of document.getElementsByName("unmatched")) r.addEventListener("change", setSaveDirty);
+
+$("save-btn").addEventListener("click", async () => {
+  const b = $("save-btn"); b.textContent = "Saving…"; b.className = "busy"; b.disabled = true;
+  const ids = [...document.querySelectorAll("#courses input:checked")].map(c => Number(c.value));
+  const um = [...document.getElementsByName("unmatched")].find(r => r.checked)?.value || "random";
+  try {
+    const d = await api("api/save", { course_ids: ids, master_dir: $("master").value.trim(), unmatched: um });
+    b.textContent = "Saved ✓"; b.className = "done";
+    $("save-msg").textContent = d.course_ids.length + " courses will be downloaded.";
+  } catch (e) { b.textContent = "Save setup"; b.className = ""; b.disabled = false; $("save-msg").innerHTML = '<span class="error"></span>'; $("save-msg").firstChild.textContent = e.message; }
+});
+
+refresh(true);
+</script>
+</body>
+</html>
